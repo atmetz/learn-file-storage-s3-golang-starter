@@ -74,13 +74,33 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	videoPath := getAssetPath(mediaType)
+
 	_, err = tempFile.Seek(0, io.SeekStart)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not reset file pointer", err)
 		return
 	}
 
-	videoPath := getAssetPath(mediaType)
+	if _, err = io.Copy(tempFile, videoData); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error saving file", err)
+		return
+	}
+
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error getting meta data", err)
+		return
+	}
+
+	switch aspectRatio {
+	case "16:9":
+		videoPath = "landscape/" + videoPath
+	case "9:16":
+		videoPath = "portrait/" + videoPath
+	default:
+		videoPath = "other/" + videoPath
+	}
 
 	input := &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
@@ -92,21 +112,10 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	_, err = cfg.s3Client.PutObject(r.Context(), input)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error uploading file to aws", err)
-	}
-	videoDiskPath := cfg.getAssetDiskPath(videoPath)
-
-	newPath, err := os.Create(videoDiskPath)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "unable to create thumbnail", err)
-	}
-	defer newPath.Close()
-
-	if _, err = io.Copy(newPath, videoData); err != nil {
-		respondWithError(w, http.StatusInternalServerError, "error saving file", err)
 		return
 	}
 
-	imageURL := cfg.getAssetURLS3(videoPath)
+	imageURL := cfg.getObjectURL(videoPath)
 	video.VideoURL = &imageURL
 
 	err = cfg.db.UpdateVideo(video)
